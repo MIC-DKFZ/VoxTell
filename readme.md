@@ -27,6 +27,7 @@ VoxTell is a **3D vision–language segmentation model** that directly maps free
 
 ## 📰 News
 
+- **03/2026**: 🥇 First place on the [official ReXGroundingCT benchmark](https://rexrank.ai/ReXGroundingCT/index.html)
 - **02/2026**: 📄 VoxTell was accepted at CVPR 2026!
 - **02/2026**: 🎉 The community built a VoxTell web interface - thank you! 👉 [voxtell-web-plugin](https://github.com/gomesgustavoo/voxtell-web-plugin)
 - **01/2026**: 🧩 Model checkpoint **v1.1** released and now available with official napari plugin 👉 [napari-voxtell](https://github.com/MIC-DKFZ/napari-voxtell)
