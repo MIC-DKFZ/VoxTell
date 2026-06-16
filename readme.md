@@ -249,14 +249,12 @@ napari.run()
 ## Citation
 
 ```bibtex
-@misc{rokuss2025voxtell,
-      title={VoxTell: Free-Text Promptable Universal 3D Medical Image Segmentation}, 
-      author={Maximilian Rokuss and Moritz Langenberg and Yannick Kirchhoff and Fabian Isensee and Benjamin Hamm and Constantin Ulrich and Sebastian Regnery and Lukas Bauer and Efthimios Katsigiannopulos and Tobias Norajitra and Klaus Maier-Hein},
-      year={2025},
-      eprint={2511.11450},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2511.11450}, 
+@inproceedings{rokuss2026voxtell,
+      title={Voxtell: Free-text promptable universal 3d medical image segmentation},
+      author={Rokuss, Maximilian and Langenberg, Moritz and Kirchhoff, Yannick and Isensee, Fabian and Hamm, Benjamin and Ulrich, Constantin and Regnery, Sebastian and Bauer, Lukas and Katsigiannopulos, Efthimios and Norajitra, Tobias and Maier-Hein, Klaus},
+      booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+      pages={37538--37557},
+      year={2026}
 }
 ```
 
