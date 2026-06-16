@@ -182,8 +182,9 @@ from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # Load image
+# Keep `props`: it stores the original affine/orientation and is required to save the masks correctly.
 image_path = "/path/to/your/image.nii.gz"
-img, _ = NibabelIOWithReorient().read_images([image_path])
+img, props = NibabelIOWithReorient().read_images([image_path])
 
 # Define text prompts
 text_prompts = ["liver", "right kidney", "left kidney", "spleen"]
@@ -197,6 +198,32 @@ predictor = VoxTellPredictor(
 # Run prediction
 # Output shape: (num_prompts, x, y, z)
 voxtell_seg = predictor.predict_single_image(img, text_prompts)
+```
+
+#### Optional: Save Results
+
+Save the masks through the same reader:
+
+```python
+import os
+import numpy as np
+
+output_folder = "/path/to/output"
+os.makedirs(output_folder, exist_ok=True)
+writer = NibabelIOWithReorient()
+
+# Option A - one 3D mask per prompt
+for prompt, seg in zip(text_prompts, voxtell_seg):
+      out_path = os.path.join(output_folder, f"{prompt.replace(' ', '_')}.nii.gz")
+      writer.write_seg(seg, out_path, props)
+
+# Option B - a single multi-label 3D file, where each prompt gets its own label
+# value (1, 2, 3, ...). Overlapping structures are overwritten by later prompts.
+combined = np.zeros_like(voxtell_seg[0], dtype=np.uint8)
+for i, seg in enumerate(voxtell_seg):
+      combined[seg > 0] = i + 1  # label 1=first prompt, 2=second, ...
+writer.write_seg(combined, os.path.join(output_folder, "combined.nii.gz"), props)
+# Label legend: {i + 1: prompt for i, prompt in enumerate(text_prompts)}
 ```
 
 #### Optional: Visualize Results
