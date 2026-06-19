@@ -254,6 +254,34 @@ for i, prompt in enumerate(text_prompts):
 napari.run()
 ```
 
+## 🎯 Fine-Tuning
+
+Transfer VoxTell's pretrained image **encoder** into nnU-Net and fine-tune it for
+multi-class segmentation. The image encoder is transferred and the image decoder 
+is trained from scratch.
+
+**1. Preprocess your dataset** with standard nnU-Net:
+
+```bash
+export nnUNet_raw=/path/to/nnUNet_raw
+export nnUNet_preprocessed=/path/to/nnUNet_preprocessed
+export nnUNet_results=/path/to/nnUNet_results
+nnUNetv2_plan_and_preprocess -d DATASET_ID --verify_dataset_integrity
+```
+
+**2. Fine-tune** (positional `dataset configuration fold`):
+
+```bash
+voxtell-finetune DATASET_ID 3d_fullres 0 \
+    -pretrained_weights /path/to/voxtell_model/fold_0/checkpoint_final.pth
+```
+
+Use `-tr VoxTellTrainer_noMirroring` for datasets whose labels distinguish left/right. The
+CLI mirrors `nnUNetv2_train` (`--c` to resume, `--val` to validate, etc.), see the
+[nnU-Net repository](https://github.com/MIC-DKFZ/nnUNet) for the full argument reference.
+
+---
+
 ## Important: Image Orientation and Spacing
 
 - ⚠️ **Image Orientation (Critical)**: For correct anatomical localization (e.g., distinguishing left from right), images **must be in RAS orientation**. VoxTell was trained on data reoriented using [this specific reader](https://github.com/MIC-DKFZ/nnUNet/blob/86606c53ef9f556d6f024a304b52a48378453641/nnunetv2/imageio/nibabel_reader_writer.py#L101). Orientation mismatches can be a source of error. An easy way to test for this is if a simple prompt like "liver" fails and segments parts of the spleen instead. Make sure your image metadata is correct.
@@ -269,7 +297,7 @@ napari.run()
 - [x] **PyPI Package**: Package downloadable via pip
 - [x] **Model Release**: Public availability of pretrained weights
 - [x] **Napari Plugin**: Integration into the napari viewer as a [plugin](https://github.com/MIC-DKFZ/napari-voxtell)
-- [ ] **Fine-Tuning**: Support and scripts for custom fine-tuning
+- [x] **Fine-Tuning**: Support and scripts for custom fine-tuning
 
 ---
 

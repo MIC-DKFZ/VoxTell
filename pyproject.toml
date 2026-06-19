@@ -60,6 +60,7 @@ paper = "https://arxiv.org/abs/2511.11450"
 
 [project.scripts]
 voxtell-predict = "voxtell.inference.predict_from_raw_data:main"
+voxtell-finetune = "voxtell.training.run_finetuning:main"
 
 [project.optional-dependencies]
 dev = [
