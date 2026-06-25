@@ -3,75 +3,21 @@
 Command-line entrypoint for VoxTell segmentation prediction.
 
 This script provides a CLI interface to run VoxTell predictions on medical images
-with free-text prompts.
+with free-text prompts. It accepts a single image, a list of images, or a whole
+folder, and embeds the text prompts only once across all inputs. Prompts can be
+the same for every image (-p) or specified per image (--jobs).
 """
 
 import argparse
+import json
+import os
 import sys
 from pathlib import Path
-from typing import List, Optional
 
-import numpy as np
 import torch
 
-from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
-from nnunetv2.imageio.simpleitk_reader_writer import SimpleITKIO
-
 from voxtell.inference.predictor import VoxTellPredictor
-
-
-def get_reader_writer(file_path: str):
-    """
-    Determine the appropriate reader/writer based on file extension.
-    
-    Args:
-        file_path: Path to the input file.
-        
-    Returns:
-        Appropriate reader/writer instance.
-    """
-    suffix = Path(file_path).suffix.lower()
-    if suffix in ['.nii', '.gz']:
-        return NibabelIOWithReorient()
-    else:
-        raise ValueError(
-            f"Unsupported file format: {suffix}. "
-            "Only NIfTI format (.nii, .nii.gz) is currently supported. "
-            "Images must be reorientable to standard orientation with correct metadata."
-        )
-
-
-def save_segmentation(
-    segmentation: np.ndarray,
-    output_folder: Path,
-    input_filename: str,
-    properties: dict,
-    prompt_name: str = None,
-    suffix: str = '.nii.gz'
-) -> None:
-    """
-    Save segmentation mask to file.
-    
-    Args:
-        segmentation: Segmentation array to save.
-        output_folder: Output folder path.
-        input_filename: Original input filename (without extension).
-        properties: Image properties from the reader.
-        prompt_name: Optional prompt name to include in filename.
-        suffix: File extension to use.
-    """
-    if prompt_name:
-        # Clean prompt name for filename
-        safe_name = "".join(c if c.isalnum() or c in (' ', '_') else '_' for c in prompt_name)
-        safe_name = safe_name.replace(' ', '_')
-        output_file = output_folder / f"{input_filename}_{safe_name}{suffix}"
-    else:
-        output_file = output_folder / f"{input_filename}{suffix}"
-    
-    # Use NIfTI writer
-    reader_writer = NibabelIOWithReorient()
-    reader_writer.write_seg(segmentation, str(output_file), properties)
-    print(f"Saved segmentation to: {output_file}")
+from voxtell.utils.embedding_bank import download_embedding_bank, load_embedding_bank
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,48 +26,86 @@ def parse_args() -> argparse.Namespace:
         description="VoxTell: Free-Text Promptable Universal 3D Medical Image Segmentation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+Inputs (-i): EITHER a single folder (all NIfTI files in it) OR one or more files.
+Prompts: choose ONE of
+  -p / --prompts        same prompts for every image (simplest)
+  --jobs                a JSON [{"image":..,"prompts":[..]}, ..] binding each
+                        image to its own prompts (image paths come from the file)
+
+The model directory comes from -m/--model, or from the VOXTELL_MODEL environment
+variable when -m is omitted (set it once: export VOXTELL_MODEL=/path/to/model).
+
+Precomputed embeddings are downloaded automatically and used behind the scenes;
+prompts not in the bank are embedded with the text backbone. Use --no-precomputed
+to disable the download.
+
 Examples:
-  # Single prompt (saves to output_folder/case001_liver.nii.gz)
-  voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver"
-  
-  # Multiple prompts (saves individual files by default)
-  voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" "spleen" "kidney"
-  
-  # Save combined multi-label file (with overlap warning)
-  voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" "spleen" --save-combined
-  
-  # Use CPU
-  voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" --device cpu
+  # One-time setup: point VOXTELL_MODEL at your model directory
+  export VOXTELL_MODEL=/path/to/model
+
+  # Single image, single prompt (saves output_folder/case001_liver.nii.gz)
+  voxtell-predict -i case001.nii.gz -o out -p "liver"
+
+  # Whole folder, same prompts (text embedded once, reused for every image)
+  voxtell-predict -i images_folder -o out -p "liver" "spleen"
+
+  # An explicit list of files, same prompts for all
+  voxtell-predict -i a.nii.gz b.nii.gz c.nii.gz -o out -p "liver"
+
+  # Per-image prompts via a jobs file (images + prompts together, -i not used)
+  voxtell-predict -o out --jobs jobs.json
+
+  # Point at a model explicitly (overrides VOXTELL_MODEL for this run)
+  voxtell-predict -i case001.nii.gz -o out -m /path/to/model -p "liver"
+
+  # Use a local embedding bank, or turn the automatic download off
+  voxtell-predict -i case001.nii.gz -o out -p "liver" --embeddings bank.npz
+  voxtell-predict -i case001.nii.gz -o out -p "liver" --no-precomputed
+
+  # List which prompts are available as precomputed embeddings, then exit
+  voxtell-predict --list-embeddings
         """
     )
-    
+
     parser.add_argument(
         '-i', '--input',
         type=str,
-        required=True,
-        help='Path to input image file (NIfTI format recommended)'
+        nargs='+',
+        help='Input images: EITHER a single folder (all NIfTI files in it) OR one '
+             'or more NIfTI file paths (.nii/.nii.gz, absolute or relative to the '
+             'current directory). Do not mix a folder with individual files. '
+             'Not used with --jobs.'
     )
-    
+
     parser.add_argument(
         '-o', '--output',
         type=str,
-        required=True,
         help='Path to output folder where segmentation files will be saved'
     )
-    
+
     parser.add_argument(
         '-m', '--model',
         type=str,
-        required=True,
-        help='Path to VoxTell model directory containing plans.json and fold_0/'
+        help='Path to VoxTell model directory (plans.json and fold_0/). If '
+             'omitted, the VOXTELL_MODEL environment variable is used.'
     )
-    
+
     parser.add_argument(
         '-p', '--prompts',
         type=str,
         nargs='+',
-        required=True,
-        help='Text prompt(s) for segmentation (e.g., "liver" "spleen" "tumor")'
+        help='Text prompt(s) applied to EVERY image (e.g., "liver" "spleen"). '
+             'Simplest option for same-prompts-for-all.'
+    )
+
+    parser.add_argument(
+        '--jobs',
+        type=str,
+        default=None,
+        help='Per-image prompts as a JSON string or .json file: a list of '
+             '{"image": <path>, "prompts": [..]} objects. Use this when each '
+             'image needs different prompts. Images come from the file, so -i '
+             'is not used.'
     )
     
     parser.add_argument(
@@ -142,7 +126,37 @@ Examples:
     parser.add_argument(
         '--save-combined',
         action='store_true',
-        help='Save all prompts in a single multi-label file (WARNING: overlapping structures will be overwritten by later prompts)'
+        help='Save all prompts in a single multi-label file per image (WARNING: '
+             'overlapping structures will be overwritten by later prompts)'
+    )
+
+    parser.add_argument(
+        '--embeddings',
+        type=str,
+        default=None,
+        help='Path to a local precomputed text-embedding bank (.npz). Prompts '
+             'found in the bank skip the text backbone. Overrides the automatic '
+             'download.'
+    )
+
+    parser.add_argument(
+        '--no-precomputed',
+        action='store_true',
+        help='Do not download the published precomputed embedding bank; embed '
+             'every prompt with the text backbone instead.'
+    )
+
+    parser.add_argument(
+        '--list-embeddings',
+        action='store_true',
+        help='List the prompts available in the embedding bank (local --embeddings '
+             'if given, otherwise the published bank) and exit.'
+    )
+
+    parser.add_argument(
+        '--no-overwrite',
+        action='store_true',
+        help='Skip images whose output files already exist.'
     )
     
     parser.add_argument(
@@ -154,16 +168,71 @@ Examples:
     return parser.parse_args()
 
 
-def main() -> int:
-    """Main entrypoint function."""
+def _load_json_arg(value: str):
+    """Parse a JSON CLI value that is either a path to a .json file or an inline JSON string."""
+    if os.path.isfile(value):
+        with open(value) as handle:
+            return json.load(handle)
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Could not read JSON (not an existing file and not valid JSON): {value!r}"
+        ) from exc
+
+
+def _run() -> int:
+    """Main entrypoint body (wrapped by :func:`main` for broken-pipe handling)."""
     args = parse_args()
+
+    # --list-embeddings: just inspect the bank and exit (no model needed).
+    if args.list_embeddings:
+        try:
+            bank = (load_embedding_bank(args.embeddings) if args.embeddings
+                    else download_embedding_bank())
+        except Exception as exc:
+            print(f"Error: could not load embedding bank ({exc})", file=sys.stderr)
+            return 1
+        # Single write; BrokenPipeError (e.g. piping into `head`) handled in __main__.
+        print(f"{len(bank)} precomputed embeddings available:\n" +
+              "\n".join(f"  {label}" for label in sorted(bank)))
+        return 0
+
+    # Exactly one prompt source must be given.
+    prompt_sources = [
+        name for name, val in
+        (('-p/--prompts', args.prompts), ('--jobs', args.jobs)) if val
+    ]
+    if len(prompt_sources) != 1:
+        print("Error: provide exactly one of -p/--prompts or --jobs "
+              f"(got: {prompt_sources or 'none'})", file=sys.stderr)
+        return 1
+
+    # Output is always required; -i is required unless --jobs is used. The model
+    # comes from -m/--model or, if omitted, the VOXTELL_MODEL env variable.
+    missing = [name for name, val in (('--output', args.output),) if not val]
+    if not args.jobs and not args.input:
+        missing.append('--input')
+    if missing:
+        print(f"Error: the following arguments are required: {', '.join(missing)}",
+              file=sys.stderr)
+        return 1
+
+    model = args.model or os.environ.get('VOXTELL_MODEL')
+    if not model:
+        print("Error: no model directory given — pass -m/--model or set the "
+              "VOXTELL_MODEL environment variable.", file=sys.stderr)
+        return 1
+
+    if args.jobs and args.input:
+        print("Warning: -i/--input is ignored when --jobs is given", file=sys.stderr)
+
+    # Validate that -i paths exist
+    for entry in (args.input or []):
+        if not Path(entry).exists():
+            raise FileNotFoundError(f"Input path does not exist: {entry}")
     
-    # Validate inputs
-    input_path = Path(args.input)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file does not exist: {input_path}")
-    
-    model_path = Path(args.model)
+    model_path = Path(model)
     if not model_path.exists():
         raise FileNotFoundError(f"Model directory does not exist: {model_path}")
     
@@ -186,91 +255,59 @@ def main() -> int:
         device = torch.device('cpu')
         if args.verbose:
             print("Using CPU")
-    
-    # Load image
     if args.verbose:
-        print(f"Loading image: {input_path}")
-    
-    try:
-        reader_writer = get_reader_writer(str(input_path))
-        img, props = reader_writer.read_images([str(input_path)])
-    except Exception as e:
-        print(f"Error loading image: {e}", file=sys.stderr)
-        return 1
-    
-    if args.verbose:
-        print(f"Image shape: {img.shape}")
-        print(f"Text prompts: {args.prompts}")
         print(f"Loading VoxTell model from: {model_path}")
     
     predictor = VoxTellPredictor(
         model_dir=str(model_path),
-        device=device
+        device=device,
+        embedding_bank=args.embeddings,
+        use_precomputed_embeddings=not args.no_precomputed,
     )
-    
-    # Run prediction
-    if args.verbose:
-        print("Running prediction...")
-    
-    segmentations = predictor.predict_single_image(img, args.prompts)
-    
-    # Save results
-    output_folder = Path(args.output)
-    output_folder.mkdir(parents=True, exist_ok=True)
-    
-    # Get input filename without extension
-    input_filename = input_path.stem
-    if input_filename.endswith('.nii'):
-        input_filename = input_filename[:-4]
-    
-    # Determine file suffix from input
-    if input_path.suffix == '.gz' and input_path.stem.endswith('.nii'):
-        suffix = '.nii.gz'
-    else:
-        suffix = input_path.suffix
-    
+
     if args.save_combined:
-        # Show warning about overlapping structures
-        if len(args.prompts) > 1:
-            print("\n" + "="*80)
-            print("WARNING: Saving combined multi-label segmentation.")
-            print("If prompts generate overlapping structures, later prompts will overwrite")
-            print("earlier ones. This may result in loss of segmentation information.")
-            print("Consider using individual file output (default) for overlapping structures.")
-            print("="*80 + "\n")
-        
-        # Save all prompts in a single multi-label file
-        if len(args.prompts) == 1:
-            # Single prompt - save as-is
-            save_segmentation(segmentations[0], output_folder, input_filename, props, suffix=suffix)
-        else:
-            # Multiple prompts - create multi-label segmentation
-            # Each prompt gets a different label value (1, 2, 3, ...)
-            # Later prompts overwrite earlier ones in case of overlap
-            combined_seg = np.zeros_like(segmentations[0], dtype=np.uint8)
-            for i, seg in enumerate(segmentations):
-                combined_seg[seg > 0] = i + 1
-            save_segmentation(combined_seg, output_folder, input_filename, props, suffix=suffix)
-            
-            print("\nLabel mapping:")
-            for i, prompt in enumerate(args.prompts):
-                print(f"  {i + 1}: {prompt}")
+        print("\nNOTE: --save-combined writes one multi-label file per image; "
+              "overlapping structures are overwritten by later prompts.\n")
+
+    common = dict(
+        output_folder=args.output,
+        save_combined=args.save_combined,
+        overwrite=not args.no_overwrite,
+        verbose=args.verbose,
+    )
+
+    if args.jobs:
+        # Per-image prompts from a jobs JSON: [{"image":.., "prompts":[..]}, ..]
+        jobs = _load_json_arg(args.jobs)
+        if not isinstance(jobs, list) or not all(isinstance(j, dict) for j in jobs):
+            print("Error: --jobs must be a JSON list of {\"image\":.., \"prompts\":[..]} objects",
+                  file=sys.stderr)
+            return 1
+        for job in jobs:
+            if 'image' not in job or 'prompts' not in job:
+                print("Error: each --jobs entry needs 'image' and 'prompts'", file=sys.stderr)
+                return 1
+            if not Path(job['image']).exists():
+                raise FileNotFoundError(f"Job image does not exist: {job['image']}")
+        written = predictor.predict_from_jobs(jobs, **common)
     else:
-        # Default: Save each prompt as a separate file
-        for i, prompt in enumerate(args.prompts):
-            save_segmentation(
-                segmentations[i],
-                output_folder,
-                input_filename,
-                props,
-                prompt_name=prompt,
-                suffix=suffix
-            )
-    
-    if args.verbose:
-        print("\nPrediction completed successfully!")
-    
+        # -p/--prompts: same prompts for all images.
+        written = predictor.predict_from_files(inputs=args.input, text_prompts=args.prompts, **common)
+
+    print(f"\nPrediction completed successfully! Wrote {len(written)} file(s).")
     return 0
+
+
+def main() -> int:
+    """CLI entrypoint with graceful handling of pipes that close early."""
+    try:
+        code = _run()
+        sys.stdout.flush()
+        return code
+    except BrokenPipeError:
+        import os
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
 
 
 if __name__ == '__main__':
