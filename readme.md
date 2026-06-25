@@ -86,13 +86,14 @@ pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorc
 
 *For other configurations (macOS, CPU, different CUDA versions), please refer to the [PyTorch Get Started](https://pytorch.org/get-started/previous-versions/) page.*
 
-Install via pip (you can also use [uv](https://docs.astral.sh/uv/)):
+Install the latest version directly from the repository (you can also use
+[uv](https://docs.astral.sh/uv/)):
 
 ```bash
-pip install voxtell
+pip install git+https://github.com/MIC-DKFZ/VoxTell.git
 ```
 
-or install directly from the repository:
+For development, clone and install in editable mode:
 
 ```bash
 git clone https://github.com/MIC-DKFZ/VoxTell
