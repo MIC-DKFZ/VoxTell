@@ -295,6 +295,8 @@ class VoxTellPredictor:
         """
         if isinstance(text_prompts, str):
             text_prompts = [text_prompts]
+
+        text_prompts = [p.lower() for p in text_prompts]
         n_prompts = len(text_prompts)
 
         embeddings: List[Optional[torch.Tensor]] = [None] * n_prompts
