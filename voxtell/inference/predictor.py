@@ -29,6 +29,28 @@ from voxtell.utils.text_embedding import last_token_pool, wrap_with_instruction
 # Max number of prompts embedded by the text backbone in a single forward pass
 _TEXT_EMBED_BATCH_SIZE = 32
 
+# Hugging Face repo holding the published VoxTell models, and the default model
+# downloaded when no model directory is given (via the predictor's ``model_dir``
+# argument, the ``-m``/``--model`` CLI flag, or the VOXTELL_MODEL env variable).
+_DEFAULT_MODEL_REPO = 'mrokuss/VoxTell'
+_DEFAULT_MODEL = 'voxtell_v1.1'
+
+
+def download_voxtell_model(repo_id: str = _DEFAULT_MODEL_REPO,
+                           model_name: str = _DEFAULT_MODEL) -> str:
+    """Download a VoxTell model directory from the Hugging Face Hub.
+
+    The model folder is fetched with ``snapshot_download`` (one call for the
+    whole directory) and cached, so later calls reuse it and work offline.
+
+    Returns:
+        Local path to the model directory (containing plans.json and fold_0/).
+    """
+    from huggingface_hub import snapshot_download
+
+    local = snapshot_download(repo_id=repo_id, allow_patterns=[f'{model_name}/*'])
+    return os.path.join(local, model_name)
+
 
 class VoxTellPredictor:
     """
@@ -55,9 +77,11 @@ class VoxTellPredictor:
         Initialize the VoxTell predictor.
 
         Args:
-            model_dir: Path to model directory containing plans.json and
-                fold_0/checkpoint_final.pth. If None (default), the path is read
-                from the ``VOXTELL_MODEL`` environment variable.
+            model_dir: Path to a local model directory (containing plans.json and
+                fold_0/checkpoint_final.pth). If None (default), the path is read
+                from the ``VOXTELL_MODEL`` environment variable; if that is also
+                unset, the default model (``voxtell_v1.1``) is downloaded from the
+                Hugging Face Hub (and cached).
             device: PyTorch device to use for inference (default: cuda).
             text_encoding_model: Pretrained text encoding model (Qwen/Qwen3-Embedding-4B).
             embedding_bank: Optional explicit bank of precomputed text embeddings,
@@ -93,14 +117,12 @@ class VoxTellPredictor:
         # Embeddings computed on the fly are also cached here for the session.
         self.embedding_bank = self._resolve_embedding_bank(embedding_bank, use_precomputed_embeddings)
 
-        # Resolve the model directory: explicit path, else the VOXTELL_MODEL env var.
+        # Resolve the model directory: an explicit path, the VOXTELL_MODEL env
+        # var, else download the default model from the Hugging Face Hub (cached).
         if model_dir is None:
             model_dir = os.environ.get('VOXTELL_MODEL')
         if model_dir is None:
-            raise ValueError(
-                "No model directory given. Pass model_dir=... or set the "
-                "VOXTELL_MODEL environment variable to the model folder."
-            )
+            model_dir = download_voxtell_model()
 
         # Load network settings
         plans = load_json(join(model_dir, 'plans.json'))
@@ -211,7 +233,7 @@ class VoxTellPredictor:
 
         An explicit ``embedding_bank`` (path or dict) wins. Otherwise, if
         ``use_precomputed_embeddings`` is set, the published bank is downloaded;
-        a failed download is handled gracefully
+        a failed download is handled gracefully.
         """
         if embedding_bank is not None:
             if isinstance(embedding_bank, (str, Path)):

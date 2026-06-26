@@ -107,31 +107,32 @@ pip install -e .
 
 👉 NEW: [Try VoxTell interactively in the napari viewer](https://github.com/MIC-DKFZ/napari-voxtell)
 
-You can download VoxTell checkpoints using the Hugging Face `huggingface_hub` library:
+VoxTell downloads its default model (`voxtell_v1.1`) automatically on first use and caches it (in
+the standard Hugging Face cache, `~/.cache/huggingface`), so the examples below work without any
+setup.
 
-```
+To download a copy into a directory you control (e.g. to use a different or custom model), fetch
+it with the Hugging Face `huggingface_hub` library:
+
+```python
+import os
 from huggingface_hub import snapshot_download
 
-MODEL_NAME = "voxtell_v1.1" # Updated models may be available in the future
-DOWNLOAD_DIR = "/home/user/temp" # Optionally specify the download directory
+MODEL_NAME = "voxtell_v1.1"        # the default model
+DOWNLOAD_DIR = "/home/user/temp"   # where to put the model
 
-download_path = snapshot_download(
-      repo_id="mrokuss/VoxTell",
-      allow_patterns=[f"{MODEL_NAME}/*", "*.json"],
-      local_dir=DOWNLOAD_DIR
-)
-
-# path to model directory, e.g., "/home/user/temp/voxtell_v1.1"
-model_path = f"{download_path}/{MODEL_NAME}"
+local = snapshot_download("mrokuss/VoxTell", allow_patterns=f"{MODEL_NAME}/*", local_dir=DOWNLOAD_DIR)
+model_path = os.path.join(local, MODEL_NAME)  # e.g. "/home/user/temp/voxtell_v1.1"
 ```
 
-Set the `VOXTELL_MODEL` environment variable to the model directory once, and you can omit
-`-m`/`model_dir` afterwards. The examples below assume this is set; pass `-m`/`model_dir`
-explicitly to override it for a single run.
+Then point VoxTell at that directory with the `VOXTELL_MODEL` environment variable (or pass
+`-m`/`model_dir` to override per run):
 
 ```bash
-export VOXTELL_MODEL=/path/to/voxtell_v1.1   # e.g. add this to your ~/.bashrc
+export VOXTELL_MODEL=/path/to/voxtell_v1.1   # a local model directory (e.g. add to ~/.bashrc)
 ```
+
+Once a model has been downloaded it is cached, so subsequent runs work offline.
 
 ### Command-Line Interface (CLI)
 
@@ -169,7 +170,7 @@ voxtell-predict -i case001.nii.gz -o output_folder -p "liver" "spleen" --save-co
 |----------|-------|----------|-------------|
 | `--input` | `-i` | Yes | Path to input NIfTI file |
 | `--output` | `-o` | Yes | Path to output folder |
-| `--model` | `-m` | No | Path to VoxTell model directory. If omitted, the `VOXTELL_MODEL` environment variable is used |
+| `--model` | `-m` | No | Path to a local model directory. If omitted, uses `VOXTELL_MODEL` or downloads the default model (`voxtell_v1.1`) from Hugging Face |
 | `--prompts` | `-p` | Yes | Text prompt(s) for segmentation |
 | `--device` | | No | Device to use: `cuda` (default) or `cpu` |
 | `--gpu` | | No | GPU device ID (default: 0) |
@@ -237,7 +238,7 @@ text_prompts = ["liver", "right kidney", "left kidney", "spleen"]
 
 # Initialize predictor
 predictor = VoxTellPredictor(
-      model_dir="/path/to/voxtell_model_directory",  # if omitted, the VOXTELL_MODEL env var is used
+      model_dir="/path/to/voxtell_model_directory",  # optional; omit to use $VOXTELL_MODEL or auto-download
       device=device,
 )
 
@@ -281,7 +282,7 @@ To segment many images with the same prompts, use `predict_from_files`. The text
 embedded **once** and reused across every image (a folder, a single file, or a list of files):
 
 ```python
-predictor = VoxTellPredictor(device=device)   # model_dir defaults to $VOXTELL_MODEL
+predictor = VoxTellPredictor(device=device)   # model auto-downloads (or set $VOXTELL_MODEL)
 
 written = predictor.predict_from_files(
     inputs="/path/to/images_folder",          # folder, file, or list of files

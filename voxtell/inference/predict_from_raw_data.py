@@ -32,8 +32,9 @@ Prompts: choose ONE of
   --jobs                a JSON [{"image":..,"prompts":[..]}, ..] binding each
                         image to its own prompts (image paths come from the file)
 
-The model directory comes from -m/--model, or from the VOXTELL_MODEL environment
-variable when -m is omitted (set it once: export VOXTELL_MODEL=/path/to/model).
+The model directory comes from -m/--model or the VOXTELL_MODEL environment
+variable; if neither is set, the default model (voxtell_v1.1) is downloaded from
+Hugging Face.
 
 Precomputed embeddings are downloaded automatically and used behind the scenes;
 prompts not in the bank are embedded with the text backbone. Use --no-precomputed
@@ -87,7 +88,8 @@ Examples:
         '-m', '--model',
         type=str,
         help='Path to VoxTell model directory (plans.json and fold_0/). If '
-             'omitted, the VOXTELL_MODEL environment variable is used.'
+             'omitted, the VOXTELL_MODEL environment variable is used, or the '
+             'default model (voxtell_v1.1) is downloaded from Hugging Face.'
     )
 
     parser.add_argument(
@@ -218,11 +220,9 @@ def _run() -> int:
               file=sys.stderr)
         return 1
 
+    # Model from -m/--model or VOXTELL_MODEL; if neither is set, model stays None
+    # and VoxTellPredictor downloads the default model from Hugging Face (cached).
     model = args.model or os.environ.get('VOXTELL_MODEL')
-    if not model:
-        print("Error: no model directory given — pass -m/--model or set the "
-              "VOXTELL_MODEL environment variable.", file=sys.stderr)
-        return 1
 
     if args.jobs and args.input:
         print("Warning: -i/--input is ignored when --jobs is given", file=sys.stderr)
@@ -231,16 +231,18 @@ def _run() -> int:
     for entry in (args.input or []):
         if not Path(entry).exists():
             raise FileNotFoundError(f"Input path does not exist: {entry}")
-    
-    model_path = Path(model)
-    if not model_path.exists():
-        raise FileNotFoundError(f"Model directory does not exist: {model_path}")
-    
-    if not (model_path / 'plans.json').exists():
-        raise FileNotFoundError(f"plans.json not found in model directory: {model_path}")
-    
-    if not (model_path / 'fold_0' / 'checkpoint_final.pth').exists():
-        raise FileNotFoundError(f"checkpoint_final.pth not found in {model_path / 'fold_0'}")
+
+    # When a model is given it must be a local directory; validate it. If omitted,
+    # model stays None and VoxTellPredictor downloads the default model.
+    if model is not None:
+        model_path = Path(model).expanduser()
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model directory does not exist: {model_path}")
+        if not (model_path / 'plans.json').exists():
+            raise FileNotFoundError(f"plans.json not found in model directory: {model_path}")
+        if not (model_path / 'fold_0' / 'checkpoint_final.pth').exists():
+            raise FileNotFoundError(f"checkpoint_final.pth not found in {model_path / 'fold_0'}")
+        model = str(model_path)
     
     # Setup device
     if args.device == 'cuda':
@@ -256,10 +258,11 @@ def _run() -> int:
         if args.verbose:
             print("Using CPU")
     if args.verbose:
-        print(f"Loading VoxTell model from: {model_path}")
-    
+        print(f"Loading VoxTell model from: {model}" if model else
+              "No model given; downloading the default VoxTell model from Hugging Face")
+
     predictor = VoxTellPredictor(
-        model_dir=str(model_path),
+        model_dir=model,
         device=device,
         embedding_bank=args.embeddings,
         use_precomputed_embeddings=not args.no_precomputed,
