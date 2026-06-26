@@ -86,13 +86,14 @@ pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorc
 
 *For other configurations (macOS, CPU, different CUDA versions), please refer to the [PyTorch Get Started](https://pytorch.org/get-started/previous-versions/) page.*
 
-Install via pip (you can also use [uv](https://docs.astral.sh/uv/)):
+Install the latest version directly from the repository (you can also use
+[uv](https://docs.astral.sh/uv/)):
 
 ```bash
-pip install voxtell
+pip install git+https://github.com/MIC-DKFZ/VoxTell.git
 ```
 
-or install directly from the repository:
+For development, clone and install in editable mode:
 
 ```bash
 git clone https://github.com/MIC-DKFZ/VoxTell
@@ -106,41 +107,50 @@ pip install -e .
 
 👉 NEW: [Try VoxTell interactively in the napari viewer](https://github.com/MIC-DKFZ/napari-voxtell)
 
-You can download VoxTell checkpoints using the Hugging Face `huggingface_hub` library:
+VoxTell downloads its default model (`voxtell_v1.1`) automatically on first use and caches it (in
+the standard Hugging Face cache, `~/.cache/huggingface`), so the examples below work without any
+setup.
 
-```
+To download a copy into a directory you control (e.g. to use a different or custom model), fetch
+it with the Hugging Face `huggingface_hub` library:
+
+```python
+import os
 from huggingface_hub import snapshot_download
 
-MODEL_NAME = "voxtell_v1.1" # Updated models may be available in the future
-DOWNLOAD_DIR = "/home/user/temp" # Optionally specify the download directory
+MODEL_NAME = "voxtell_v1.1"        # the default model
+DOWNLOAD_DIR = "/home/user/temp"   # where to put the model
 
-download_path = snapshot_download(
-      repo_id="mrokuss/VoxTell",
-      allow_patterns=[f"{MODEL_NAME}/*", "*.json"],
-      local_dir=DOWNLOAD_DIR
-)
-
-# path to model directory, e.g., "/home/user/temp/voxtell_v1.1"
-model_path = f"{download_path}/{MODEL_NAME}"
+local = snapshot_download("mrokuss/VoxTell", allow_patterns=f"{MODEL_NAME}/*", local_dir=DOWNLOAD_DIR)
+model_path = os.path.join(local, MODEL_NAME)  # e.g. "/home/user/temp/voxtell_v1.1"
 ```
+
+Then point VoxTell at that directory with the `VOXTELL_MODEL` environment variable (or pass
+`-m`/`model_dir` to override per run):
+
+```bash
+export VOXTELL_MODEL=/path/to/voxtell_v1.1   # a local model directory (e.g. add to ~/.bashrc)
+```
+
+Once a model has been downloaded it is cached, so subsequent runs work offline.
 
 ### Command-Line Interface (CLI)
 
 VoxTell provides a convenient command-line interface for running predictions:
 
 ```bash
-voxtell-predict -i input.nii.gz -o output_folder -m /path/to/model -p "liver" "spleen" "kidney"
+voxtell-predict -i input.nii.gz -o output_folder -p "liver" "spleen" "kidney"
 ```
 
 **Single prompt:**
 ```bash
-voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver"
+voxtell-predict -i case001.nii.gz -o output_folder -p "liver"
 # Output: output_folder/case001_liver.nii.gz
 ```
 
 **Multiple prompts (saves individual files by default):**
 ```bash
-voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" "spleen" "right kidney"
+voxtell-predict -i case001.nii.gz -o output_folder -p "liver" "spleen" "right kidney"
 # Outputs: 
 #   output_folder/case001_liver.nii.gz
 #   output_folder/case001_spleen.nii.gz
@@ -149,7 +159,7 @@ voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" 
 
 **Save combined multi-label file:**
 ```bash
-voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" "spleen" --save-combined
+voxtell-predict -i case001.nii.gz -o output_folder -p "liver" "spleen" --save-combined
 # Output: output_folder/case001.nii.gz (multi-label: 1=liver, 2=spleen)
 # ⚠️ WARNING: Overlapping structures will be overwritten by later prompts
 ```
@@ -160,12 +170,49 @@ voxtell-predict -i case001.nii.gz -o output_folder -m /path/to/model -p "liver" 
 |----------|-------|----------|-------------|
 | `--input` | `-i` | Yes | Path to input NIfTI file |
 | `--output` | `-o` | Yes | Path to output folder |
-| `--model` | `-m` | Yes | Path to VoxTell model directory |
+| `--model` | `-m` | No | Path to a local model directory. If omitted, uses `VOXTELL_MODEL` or downloads the default model (`voxtell_v1.1`) from Hugging Face |
 | `--prompts` | `-p` | Yes | Text prompt(s) for segmentation |
 | `--device` | | No | Device to use: `cuda` (default) or `cpu` |
 | `--gpu` | | No | GPU device ID (default: 0) |
 | `--save-combined` | | No | Save multi-label file instead of individual files |
+| `--embeddings` | | No | Use a local precomputed-embeddings file (`.npz`) instead of auto-download |
+| `--no-precomputed` | | No | Skip the automatic precomputed-embeddings download; embed every prompt with the backbone |
+| `--list-embeddings` | | No | List the available precomputed prompts and exit |
+| `--no-overwrite` | | No | Skip images whose outputs already exist |
 | `--verbose` | | No | Enable verbose output |
+
+> `--input` is **either** a single folder (all NIfTI files in it) **or** one or more NIfTI files
+> (absolute or relative to the current directory) — not a mix. The text prompts are embedded once
+> and reused across all images.
+
+#### Batch / folder / list inference (same prompts)
+
+```bash
+# Every NIfTI in a folder
+voxtell-predict -i images_folder -o output_folder -p "liver" "spleen"
+
+# An explicit list of files
+voxtell-predict -i a.nii.gz b.nii.gz c.nii.gz -o out -p "liver"
+```
+
+#### Different prompts per image
+
+Use `--jobs` to bind each image to its own prompts (images come from the file, so `-i` is not used).
+The *union* of all prompts across the jobs is embedded only once.
+
+```bash
+voxtell-predict --jobs jobs.json -o out
+```
+
+```json
+// jobs.json
+[
+  {"image": "a.nii.gz", "prompts": ["liver", "spleen"]},
+  {"image": "b.nii.gz", "prompts": ["tumor"]}
+]
+```
+
+(For the same prompts on every image, use `-p` with `-i` instead.)
 
 ---
 
@@ -191,7 +238,7 @@ text_prompts = ["liver", "right kidney", "left kidney", "spleen"]
 
 # Initialize predictor
 predictor = VoxTellPredictor(
-      model_dir="/path/to/voxtell_model_directory",
+      model_dir="/path/to/voxtell_model_directory",  # optional; omit to use $VOXTELL_MODEL or auto-download
       device=device,
 )
 
@@ -224,6 +271,56 @@ for i, seg in enumerate(voxtell_seg):
       combined[seg > 0] = i + 1  # label 1=first prompt, 2=second, ...
 writer.write_seg(combined, os.path.join(output_folder, "combined.nii.gz"), props)
 # Label legend: {i + 1: prompt for i, prompt in enumerate(text_prompts)}
+```
+
+For many images, the `voxtell-predict` CLI and `predictor.predict_from_files` /
+`predict_from_jobs` (below) handle this saving for you.
+
+#### Efficient batch / folder inference
+
+To segment many images with the same prompts, use `predict_from_files`. The text prompts are
+embedded **once** and reused across every image (a folder, a single file, or a list of files):
+
+```python
+predictor = VoxTellPredictor(device=device)   # model auto-downloads (or set $VOXTELL_MODEL)
+
+written = predictor.predict_from_files(
+    inputs="/path/to/images_folder",          # folder, file, or list of files
+    output_folder="/path/to/output",
+    text_prompts=["liver", "spleen"],
+    save_combined=False,                       # one file per prompt (default)
+)
+```
+
+For **different prompts per image**, use `predict_from_jobs` (the union of all prompts is embedded
+once):
+
+```python
+predictor.predict_from_jobs(
+    jobs=[
+        {"image": "a.nii.gz", "prompts": ["liver", "spleen"]},
+        {"image": "b.nii.gz", "prompts": ["tumor"]},
+    ],
+    output_folder="/path/to/output",
+)
+```
+
+You can also embed prompts yourself and feed the embeddings into `predict_single_image` to reuse
+them across custom loops:
+
+```python
+embeddings = predictor.embed_text_prompts(["liver", "spleen"])
+seg = predictor.predict_single_image(img, text_embeddings=embeddings)
+```
+
+#### Precomputed text embeddings
+
+Common prompts are precomputed and downloaded automatically from Hugging Face, skipping the Qwen3
+backbone; anything uncovered is embedded on the fly. To override:
+
+```python
+VoxTellPredictor(embedding_bank="/path/to/embeddings.npz")  # explicit local file
+VoxTellPredictor(use_precomputed_embeddings=False)          # always use the backbone
 ```
 
 #### Optional: Visualize Results
