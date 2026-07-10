@@ -36,6 +36,15 @@ _DEFAULT_MODEL_REPO = 'mrokuss/VoxTell'
 _DEFAULT_MODEL = 'voxtell_v1.1'
 
 
+class _ProducerError:
+    """Wraps an exception raised in the sliding-window producer thread so it can
+    be passed through the patch queue and re-raised on the consumer side."""
+    __slots__ = ('exc',)
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+
 def download_voxtell_model(repo_id: str = _DEFAULT_MODEL_REPO,
                            model_name: str = _DEFAULT_MODEL) -> str:
     """Download a VoxTell model directory from the Hugging Face Hub.
@@ -428,13 +437,22 @@ class VoxTellPredictor:
         results_device = self.device if do_on_device else torch.device('cpu')
 
         def producer(data_tensor, slicer_list, queue):
-            """Producer thread that loads patches into queue."""
-            for slicer in slicer_list:
-                patch = torch.clone(
-                    data_tensor[slicer][None],
-                    memory_format=torch.contiguous_format
-                ).to(self.device)
-                queue.put((patch, slicer))
+            """Producer thread that loads patches into queue.
+
+            On any error (e.g. CUDA OOM while copying a patch to the device) the
+            exception is forwarded to the consumer so it can re-raise instead of
+            blocking forever on an ``end`` sentinel that would never arrive.
+            """
+            try:
+                for slicer in slicer_list:
+                    patch = torch.clone(
+                        data_tensor[slicer][None],
+                        memory_format=torch.contiguous_format
+                    ).to(self.device)
+                    queue.put((patch, slicer))
+            except Exception as exc:  # noqa: BLE001 - forwarded and re-raised below
+                queue.put(_ProducerError(exc))
+                return
             queue.put('end')
 
         empty_cache(self.device)
@@ -464,6 +482,11 @@ class VoxTellPredictor:
                 if item == 'end':
                     queue.task_done()
                     break
+                if isinstance(item, _ProducerError):
+                    queue.task_done()
+                    raise RuntimeError(
+                        "Sliding-window patch producer thread failed"
+                    ) from item.exc
                 patch, tile_slice = item
                 prediction = self.network(patch, text_embeddings)[0].to(results_device)
                 prediction *= gaussian

@@ -27,6 +27,7 @@ VoxTell is a **3D vision–language segmentation model** that directly maps free
 
 ## 📰 News
 
+- **07/2026**: 🚀 New batch and folder inference for the CLI and Python API — text-prompt embeddings can be cached and reused across multiple images, with faster, more memory-efficient text encoding. 👉 [Getting Started](#-getting-started)
 - **03/2026**: 🥇 First place on the [official ReXGroundingCT benchmark](https://rexrank.ai/ReXGroundingCT/index.html)
 - **02/2026**: 📄 VoxTell was accepted at CVPR 2026!
 - **02/2026**: 🎉 The community built a VoxTell web interface - thank you! 👉 [voxtell-web-plugin](https://github.com/gomesgustavoo/voxtell-web-plugin)
