@@ -3,7 +3,7 @@ import pydoc
 from pathlib import Path
 from queue import Queue
 from threading import Thread
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -24,6 +24,10 @@ from nnunetv2.utilities.helpers import dummy_context, empty_cache
 from voxtell.model.voxtell_model import VoxTellModel
 from voxtell.utils.embedding_bank import download_embedding_bank, load_embedding_bank
 from voxtell.utils.text_embedding import last_token_pool, wrap_with_instruction
+
+
+class InferenceCancelled(RuntimeError):
+    """Raised when a ``progress_callback`` returns False to abort sliding-window inference."""
 
 
 # Max number of prompts embedded by the text backbone in a single forward pass
@@ -366,7 +370,8 @@ class VoxTellPredictor:
     def predict_sliding_window_return_logits(
         self,
         input_image: torch.Tensor,
-        text_embeddings: torch.Tensor
+        text_embeddings: torch.Tensor,
+        progress_callback: Optional[Callable[[int, int], bool]] = None,
     ) -> torch.Tensor:
         """
         Perform sliding window inference to generate segmentation logits.
@@ -400,7 +405,8 @@ class VoxTellPredictor:
             slicers = self._internal_get_sliding_window_slicers(data.shape[1:])
 
             predicted_logits = self._internal_predict_sliding_window_return_logits(
-                data, text_embeddings, slicers, self.perform_everything_on_device
+                data, text_embeddings, slicers, self.perform_everything_on_device,
+                progress_callback=progress_callback,
             )
 
             empty_cache(self.device)
@@ -415,6 +421,7 @@ class VoxTellPredictor:
         text_embeddings: torch.Tensor,
         slicers: List[Tuple],
         do_on_device: bool = True,
+        progress_callback: Optional[Callable[[int, int], bool]] = None,
     ) -> torch.Tensor:
         """
         Internal method for sliding window prediction with Gaussian weighting.
@@ -476,17 +483,28 @@ class VoxTellPredictor:
             device=results_device
         )
 
-        with tqdm(desc=None, total=len(slicers)) as pbar:
+        total = len(slicers)
+        done = 0
+        cancelled = False
+        with tqdm(desc=None, total=total) as pbar:
             while True:
                 item = queue.get()
                 if item == 'end':
                     queue.task_done()
                     break
                 if isinstance(item, _ProducerError):
+                    # Check producer errors first: on error the producer returns
+                    # WITHOUT sending 'end', so we must re-raise even while draining
+                    # after a cancel — otherwise queue.get() would block forever.
                     queue.task_done()
                     raise RuntimeError(
                         "Sliding-window patch producer thread failed"
                     ) from item.exc
+                if cancelled:
+                    # Keep draining so the producer thread can finish and not block;
+                    # skip the (expensive) network forward.
+                    queue.task_done()
+                    continue
                 patch, tile_slice = item
                 prediction = self.network(patch, text_embeddings)[0].to(results_device)
                 prediction *= gaussian
@@ -494,7 +512,12 @@ class VoxTellPredictor:
                 n_predictions[tile_slice[1:]] += gaussian
                 queue.task_done()
                 pbar.update()
+                done += 1
+                if progress_callback is not None and progress_callback(done, total) is False:
+                    cancelled = True
         queue.join()
+        if cancelled:
+            raise InferenceCancelled("Inference cancelled by user.")
 
         # Normalize by number of predictions per voxel
         torch.div(predicted_logits, n_predictions, out=predicted_logits)
@@ -513,6 +536,7 @@ class VoxTellPredictor:
         data: np.ndarray,
         text_prompts: Union[str, List[str], None] = None,
         text_embeddings: Optional[torch.Tensor] = None,
+        progress_callback: Optional[Callable[[int, int], bool]] = None,
     ) -> np.ndarray:
         """
         Predict segmentation masks for a single image with text prompts.
@@ -529,6 +553,9 @@ class VoxTellPredictor:
                 (1, num_prompts, embedding_dim), as returned by
                 :meth:`embed_text_prompts`. Pass this to reuse one embedding pass
                 across many images (see :meth:`predict_from_files`).
+            progress_callback: Optional ``fn(done, total)`` called after each sliding
+                -window patch. Return ``False`` to abort (raises
+                :class:`InferenceCancelled`); any other return continues.
 
         Returns:
             Segmentation masks as numpy array of shape (num_prompts, X, Y, Z)
@@ -543,7 +570,9 @@ class VoxTellPredictor:
         data, bbox, orig_shape = self.preprocess(data)
 
         # Predict segmentation logits
-        prediction = self.predict_sliding_window_return_logits(data, text_embeddings).to('cpu')
+        prediction = self.predict_sliding_window_return_logits(
+            data, text_embeddings, progress_callback=progress_callback
+        ).to('cpu')
 
         # Postprocess logits to get binary segmentation masks
         with torch.no_grad():

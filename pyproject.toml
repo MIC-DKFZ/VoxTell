@@ -62,12 +62,18 @@ paper = "https://arxiv.org/abs/2511.11450"
 [project.scripts]
 voxtell-predict = "voxtell.inference.predict_from_raw_data:main"
 voxtell-finetune = "voxtell.training.run_finetuning:main"
+voxtell-server = "voxtell.server.__main__:main"
 
 [project.optional-dependencies]
 dev = [
     "black",
     "ruff",
     "pre-commit"
+]
+server = [
+    "fastapi",
+    "uvicorn[standard]",
+    "blosc2",
 ]
 
 [build-system]

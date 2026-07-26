@@ -352,6 +352,28 @@ for i, prompt in enumerate(text_prompts):
 napari.run()
 ```
 
+## 🌐 Remote Inference Server
+
+Run VoxTell as an HTTP server so a lightweight client (e.g. the
+[napari-voxtell](https://github.com/MIC-DKFZ/napari-voxtell) plugin on a laptop) can drive
+inference on a remote GPU machine. The client uploads a NIfTI once; the server reorients it,
+runs sliding-window inference, streams per-patch progress, and returns the masks.
+
+```bash
+pip install "voxtell[server]"
+
+# Bind to localhost (reach it over an SSH tunnel) - safe default for a single user
+voxtell-server --host 127.0.0.1 --port 1527
+
+# ...or expose it on a trusted LAN behind a static bearer token
+voxtell-server --host 0.0.0.0 --port 1527 --api-key "$VOXTELL_API_KEY"
+```
+
+Model resolution matches `voxtell-predict` (`-m/--model` → `$VOXTELL_MODEL` → Hugging Face
+download). From a laptop, forward the port with `ssh -N -L 1527:127.0.0.1:1527 workstation`
+and point the client at `http://127.0.0.1:1527`. The client/server design is inspired by
+MIC-DKFZ's [nnInteractive](https://github.com/MIC-DKFZ/nnInteractive) (Apache-2.0).
+
 ## 🎯 Fine-Tuning
 
 Transfer VoxTell's pretrained image **encoder** into nnU-Net and fine-tune it for
