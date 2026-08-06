@@ -74,15 +74,10 @@ conda activate voxtell
 
 ### 2. Install PyTorch
 
-> [!WARNING]
-> **Temporary Compatibility Warning**  
-> There is a known issue with **PyTorch 2.9.0** causing **OOM errors during inference** (related to 3D convolutions — see the PyTorch issue [here](https://github.com/pytorch/pytorch/issues/166122)).  
-> **Until this is resolved, please use PyTorch 2.8.0 or earlier.**
-
 Install PyTorch compatible with your CUDA version. For example, for Ubuntu with a modern NVIDIA GPU:
 
 ```bash
-pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu126
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
 *For other configurations (macOS, CPU, different CUDA versions), please refer to the [PyTorch Get Started](https://pytorch.org/get-started/previous-versions/) page.*
