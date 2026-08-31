@@ -89,7 +89,7 @@ Install the latest version directly from the repository (you can also use
 pip install git+https://github.com/MIC-DKFZ/VoxTell.git
 ```
 
-For development, clone and install in editable mode:
+or for the original release use ```pip install voxtell```. For development, clone and install in editable mode:
 
 ```bash
 git clone https://github.com/MIC-DKFZ/VoxTell
