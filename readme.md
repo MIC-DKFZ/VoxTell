@@ -12,7 +12,7 @@
 
 </div>
 
-<img src="documentation/assets/VoxTellLogo.png" alt="VoxTell Logo"/>
+<img src="https://raw.githubusercontent.com/MIC-DKFZ/VoxTell/main/documentation/assets/VoxTellLogo.png" alt="VoxTell Logo"/>
 
 This repository contains the official implementation of our paper:
 
@@ -27,6 +27,7 @@ VoxTell is a **3D vision–language segmentation model** that directly maps free
 
 ## 📰 News
 
+- **09/2026**: 📦 **v0.1.2** on PyPI: `pip install voxtell` now brings batch/folder inference, precomputed prompt embeddings, the remote inference server and fine-tuning, with lower memory use and many fixes
 - **07/2026**: 🚀 New batch and folder inference for the CLI and Python API — text-prompt embeddings can be cached and reused across multiple images, with faster, more memory-efficient text encoding. 👉 [Getting Started](#-getting-started)
 - **03/2026**: 🥇 First place on the [official ReXGroundingCT benchmark](https://rexrank.ai/ReXGroundingCT/index.html)
 - **02/2026**: 📄 VoxTell was accepted at CVPR 2026!
@@ -42,7 +43,7 @@ VoxTell is trained on a **large-scale, multi-modality 3D medical imaging dataset
 - Musculoskeletal system and extremities  
 - Vascular structures, major organs, substructures, and lesions  
 
-<img src="documentation/assets/VoxTellConcepts.png" alt="Concept Coverage"/>
+<img src="https://raw.githubusercontent.com/MIC-DKFZ/VoxTell/main/documentation/assets/VoxTellConcepts.png" alt="Concept Coverage"/>
 
 This rich semantic diversity enables **language-conditioned 3D reasoning**, allowing VoxTell to generate volumetric masks from flexible textual descriptions, from coarse anatomical labels to fine-grained pathological findings.
 
@@ -57,7 +58,7 @@ VoxTell combines **3D image encoding** with **text-prompt embeddings** and **mul
 - **Prompt Decoder**: Transforms text queries and image latents into multi-scale text features
 - **Image Decoder**: Fuses visual and textual information at multiple resolutions using MaskFormer-style query-image fusion with deep supervision
 
-<img src="documentation/assets/VoxTellArchitecture.png" alt="Architecture Diagram"/>
+<img src="https://raw.githubusercontent.com/MIC-DKFZ/VoxTell/main/documentation/assets/VoxTellArchitecture.png" alt="Architecture Diagram"/>
 
 ---
 
@@ -85,14 +86,22 @@ regression (also excluded by nnU-Net).
 
 *For other configurations (macOS, CPU, different CUDA versions), please refer to the [PyTorch Get Started](https://pytorch.org/get-started/previous-versions/) page.*
 
-Install the latest version directly from the repository (you can also use
-[uv](https://docs.astral.sh/uv/)):
+### 3. Install VoxTell
+
+Install the latest release from PyPI (you can also use [uv](https://docs.astral.sh/uv/)):
+
+```bash
+pip install voxtell
+```
+
+For the development version (the `main` branch, which may contain unreleased changes), install
+directly from GitHub:
 
 ```bash
 pip install git+https://github.com/MIC-DKFZ/VoxTell.git
 ```
 
-or for the original release use ```pip install voxtell```. For development, clone and install in editable mode:
+For development, clone and install in editable mode:
 
 ```bash
 git clone https://github.com/MIC-DKFZ/VoxTell
