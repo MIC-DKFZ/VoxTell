@@ -11,9 +11,11 @@ Set ``nnUNet_preprocessed`` and ``nnUNet_results`` as usual. Example:
     voxtell-finetune DATASET_ID 3d_fullres 0 -pretrained_weights /path/to/checkpoint_final.pth
 """
 import argparse
+import multiprocessing
 import os
 
 import torch
+from torch.backends import cudnn
 
 
 def run_finetuning(dataset_name_or_id, configuration, fold, trainer_name="VoxTellTrainer",
@@ -56,10 +58,9 @@ def run_finetuning(dataset_name_or_id, configuration, fold, trainer_name="VoxTel
         device=torch.device(device),
     )
 
-    # On resume / validation the weights come from the saved checkpoint, not the encoder transfer.
-    if continue_training or only_run_validation:
-        trainer.pretrained_checkpoint = None
-
+    # On resume / validation the weights come from the saved checkpoint, not the encoder
+    # transfer. A --c without any checkpoint starts a new training, which must still
+    # transfer the pretrained encoder.
     if continue_training:
         ckpt = next((join(trainer.output_folder, c) for c in
                      ("checkpoint_final.pth", "checkpoint_latest.pth")
@@ -67,14 +68,20 @@ def run_finetuning(dataset_name_or_id, configuration, fold, trainer_name="VoxTel
         if ckpt is None:
             print("WARNING: --c set but no checkpoint found; starting a new training.")
         else:
+            trainer.pretrained_checkpoint = None
             trainer.load_checkpoint(ckpt)
     elif only_run_validation:
+        trainer.pretrained_checkpoint = None
         trainer.load_checkpoint(join(trainer.output_folder, "checkpoint_final.pth"))
 
-    if only_run_validation:
-        trainer.perform_actual_validation()
-    else:
+    if torch.cuda.is_available():
+        cudnn.deterministic = False
+        cudnn.benchmark = True
+
+    # Like nnUNetv2_train: train (unless --val), then always run the final validation.
+    if not only_run_validation:
         trainer.run_training()
+    trainer.perform_actual_validation()
 
 
 def main():
@@ -92,6 +99,14 @@ def main():
     p.add_argument("--c", action="store_true", help="Continue training from the latest checkpoint")
     p.add_argument("--val", action="store_true", help="Only run validation (requires checkpoint_final)")
     args = p.parse_args()
+
+    # Same thread settings as nnUNetv2_train.
+    if args.device == "cpu":
+        torch.set_num_threads(multiprocessing.cpu_count())
+    elif args.device == "cuda":
+        # multithreading in torch doesn't help nnU-Net if run on GPU
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
 
     run_finetuning(
         dataset_name_or_id=args.dataset_name_or_id, configuration=args.configuration, fold=args.fold,
