@@ -1,5 +1,7 @@
+import hashlib
 import os
 import pydoc
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -131,9 +133,10 @@ class VoxTellPredictor:
         self.embedding_bank = self._resolve_embedding_bank(embedding_bank, use_precomputed_embeddings)
 
         # Resolve the model directory: an explicit path, the VOXTELL_MODEL env
-        # var, else download the default model from the Hugging Face Hub (cached).
+        # var (empty counts as unset), else download the default model from the
+        # Hugging Face Hub (cached).
         if model_dir is None:
-            model_dir = os.environ.get('VOXTELL_MODEL')
+            model_dir = os.environ.get('VOXTELL_MODEL') or None
         if model_dir is None:
             model_dir = download_voxtell_model()
 
@@ -574,14 +577,18 @@ class VoxTellPredictor:
         data, bbox, orig_shape = self.preprocess(data)
 
         # Predict segmentation logits
-        prediction = self.predict_sliding_window_return_logits(
+        logits = self.predict_sliding_window_return_logits(
             data, text_embeddings, progress_callback=progress_callback
-        ).to('cpu')
+        )
 
-        # Postprocess logits to get binary segmentation masks
+        # Postprocess logits to get binary segmentation masks. sigmoid(x) > 0.5 is
+        # equivalent to x > 0, so threshold the logits where they live (usually the
+        # GPU) and move only the boolean masks to the host, instead of materializing
+        # float32 copies of all logits there.
         with torch.no_grad():
-            prediction = torch.sigmoid(prediction.float()) > 0.5
-        
+            prediction = (logits > 0).cpu().numpy()
+        del logits
+
         segmentation_reverted_cropping = np.zeros(
             [prediction.shape[0], *orig_shape],
             dtype=np.uint8
@@ -594,11 +601,25 @@ class VoxTellPredictor:
 
     _NIFTI_SUFFIXES = ('.nii.gz', '.nii')
 
-    @staticmethod
-    def _safe_prompt_name(prompt: str) -> str:
-        """Turn a prompt into a filesystem-safe filename fragment."""
+    # Filenames are limited to 255 bytes on common filesystems, and prompts can be
+    # whole report sentences, so the prompt part of an output name is capped.
+    _MAX_PROMPT_NAME_BYTES = 150
+
+    @classmethod
+    def _safe_prompt_name(cls, prompt: str) -> str:
+        """Turn a prompt into a filesystem-safe filename fragment.
+
+        Prompts longer than ``_MAX_PROMPT_NAME_BYTES`` (UTF-8) are truncated and
+        suffixed with a short hash of the full prompt to keep names unique.
+        """
         safe = "".join(c if c.isalnum() or c in (' ', '_') else '_' for c in prompt)
-        return safe.replace(' ', '_')
+        safe = safe.replace(' ', '_')
+        encoded = safe.encode('utf-8')
+        if len(encoded) > cls._MAX_PROMPT_NAME_BYTES:
+            digest = hashlib.sha1(prompt.encode('utf-8')).hexdigest()[:8]
+            head = encoded[:cls._MAX_PROMPT_NAME_BYTES - len(digest) - 1]
+            safe = f"{head.decode('utf-8', errors='ignore')}_{digest}"
+        return safe
 
     @classmethod
     def _case_name(cls, file_path: Union[str, Path]) -> str:
@@ -736,18 +757,6 @@ class VoxTellPredictor:
                 "Their outputs will overwrite each other in the output folder."
             )
 
-        # Embed the union of all prompts exactly once, then assemble each job's
-        # embeddings by lookup (independent of the cache setting).
-        unique_prompts: List[str] = []
-        seen = set()
-        for _, prompts in norm:
-            for p in prompts:
-                if p not in seen:
-                    seen.add(p)
-                    unique_prompts.append(p)
-        union = self.embed_text_prompts(unique_prompts)  # (1, U, dim)
-        prompt_to_vec = {p: union[0, i] for i, p in enumerate(unique_prompts)}
-
         todo: List[Tuple[str, List[str]]] = []
         for image, prompts in norm:
             case = self._case_name(image)
@@ -756,27 +765,57 @@ class VoxTellPredictor:
                 if verbose:
                     print(f"Skipping {case} (outputs exist)")
                 continue
+            if not save_combined and len(set(expected)) < len(set(prompts)):
+                print(f"WARNING: different prompts of {case} map to the same output file "
+                      f"name ({prompts}); later prompts will overwrite earlier ones.")
             todo.append((image, prompts))
+        if not todo:
+            return []
 
+        # Embed the union of all remaining prompts exactly once, then assemble each
+        # job's embeddings by lookup (independent of the cache setting).
+        unique_prompts: List[str] = []
+        seen = set()
+        for _, prompts in todo:
+            for p in prompts:
+                if p not in seen:
+                    seen.add(p)
+                    unique_prompts.append(p)
+        union = self.embed_text_prompts(unique_prompts)  # (1, U, dim)
+        prompt_to_vec = {p: union[0, i] for i, p in enumerate(unique_prompts)}
+
+        # Reading and writing (gzip) large NIfTIs takes seconds per image, so overlap
+        # it with GPU inference: the next image is prefetched and finished masks are
+        # written in background threads (zlib and numpy release the GIL). At most one
+        # read and one write are in flight, bounding the extra host memory.
         written: List[str] = []
-        for image, prompts in tqdm(todo, desc='Images',
-                                   disable=verbose or len(todo) <= 1):
-            case = self._case_name(image)
-            if verbose:
-                print(f"Predicting {case} with prompts {prompts} ...")
-            img, props = reader_writer.read_images([image])
-            job_embeddings = torch.stack([prompt_to_vec[p] for p in prompts]).view(
-                1, len(prompts), -1
-            )
-            segmentation = self.predict_single_image(
-                img, text_embeddings=job_embeddings
-            )
-            written.extend(
-                self._save_segmentation(
-                    segmentation, output_folder, case, prompts, props,
-                    save_combined, reader_writer,
+        with ThreadPoolExecutor(max_workers=1) as reader, \
+                ThreadPoolExecutor(max_workers=1) as writer:
+            next_read = reader.submit(reader_writer.read_images, [todo[0][0]])
+            pending_write = None
+            for idx, (image, prompts) in enumerate(tqdm(todo, desc='Images',
+                                                        disable=verbose or len(todo) <= 1)):
+                case = self._case_name(image)
+                if verbose:
+                    print(f"Predicting {case} with prompts {prompts} ...")
+                img, props = next_read.result()
+                if idx + 1 < len(todo):
+                    next_read = reader.submit(reader_writer.read_images, [todo[idx + 1][0]])
+                job_embeddings = torch.stack([prompt_to_vec[p] for p in prompts]).view(
+                    1, len(prompts), -1
                 )
-            )
+                segmentation = self.predict_single_image(
+                    img, text_embeddings=job_embeddings
+                )
+                del img
+                if pending_write is not None:
+                    written.extend(pending_write.result())
+                pending_write = writer.submit(
+                    self._save_segmentation, segmentation, output_folder, case, prompts,
+                    props, save_combined, reader_writer,
+                )
+                del segmentation
+            written.extend(pending_write.result())
         return written
 
     def _expected_outputs(

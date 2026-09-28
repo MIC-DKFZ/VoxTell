@@ -65,9 +65,12 @@ match. Route every new prompt path through `embed_text_prompts` rather than embe
 identically in the predictor, `voxtell-predict` and `voxtell-server`. Any new entry point must keep
 that order. Same for the embedding bank: explicit path/dict → published HF bank → backbone.
 
-**Embed once, reuse across images.** `predict_from_jobs` embeds the *union* of all prompts and hands
-per-job slices to `predict_single_image(text_embeddings=...)`. New batch paths must not re-embed per
-image; the 4B backbone dominates runtime for short jobs.
+**Embed once, reuse across images.** `predict_from_jobs` embeds the *union* of all prompts (of the
+jobs not skipped by `overwrite=False`) and hands per-job slices to
+`predict_single_image(text_embeddings=...)`. New batch paths must not re-embed per image; the 4B
+backbone dominates runtime for short jobs. It also prefetches the next image and writes finished masks
+in background threads (at most one read and one write in flight), since gzip I/O of large volumes
+takes seconds per image.
 
 **The text backbone is lazy, bf16 on CUDA, and moved back to CPU after every embed call.** That is
 what keeps VoxTell usable on ~8 GB GPUs. Do not make it resident or float32 on CUDA.
