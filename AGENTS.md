@@ -8,7 +8,7 @@ scales. Inference is nnU-Net-style sliding window. Weights live on HF (`mrokuss/
 ## Commands
 
 ```bash
-# Setup (Python >=3.10; torch is pinned <2.9 — install it first, matched to your CUDA)
+# Setup (Python >=3.10; torch 2.9.x is excluded — install torch first, matched to your CUDA)
 conda create -n voxtell python=3.12 && conda activate voxtell
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip install -e ".[dev,server]"

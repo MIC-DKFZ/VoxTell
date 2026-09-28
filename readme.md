@@ -80,6 +80,9 @@ Install PyTorch compatible with your CUDA version. For example, for Ubuntu with 
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 ```
 
+Any PyTorch >= 2.1.2 works except the 2.9.x series, which has a 3D-convolution memory
+regression (also excluded by nnU-Net).
+
 *For other configurations (macOS, CPU, different CUDA versions), please refer to the [PyTorch Get Started](https://pytorch.org/get-started/previous-versions/) page.*
 
 Install the latest version directly from the repository (you can also use
@@ -164,10 +167,11 @@ voxtell-predict -i case001.nii.gz -o output_folder -p "liver" "spleen" --save-co
 
 | Argument | Short | Required | Description |
 |----------|-------|----------|-------------|
-| `--input` | `-i` | Yes | Path to input NIfTI file |
+| `--input` | `-i` | Yes (unless `--jobs`) | Input NIfTI file(s), or a single folder of NIfTI files |
 | `--output` | `-o` | Yes | Path to output folder |
 | `--model` | `-m` | No | Path to a local model directory. If omitted, uses `VOXTELL_MODEL` or downloads the default model (`voxtell_v1.1`) from Hugging Face |
-| `--prompts` | `-p` | Yes | Text prompt(s) for segmentation |
+| `--prompts` | `-p` | Yes (unless `--jobs`) | Text prompt(s) for segmentation, applied to every input image |
+| `--jobs` | | No | Per-image prompts instead of `-i`/`-p`: a `.json` file or inline JSON list of `{"image": ..., "prompts": [...]}` |
 | `--device` | | No | Device to use: `cuda` (default) or `cpu` |
 | `--gpu` | | No | GPU device ID (default: 0) |
 | `--save-combined` | | No | Save multi-label file instead of individual files |
