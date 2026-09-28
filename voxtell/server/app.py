@@ -20,6 +20,7 @@ nnInteractive / napari-nninteractive (Apache-2.0).
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import queue
@@ -32,6 +33,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 from nnunetv2.imageio.nibabel_reader_writer import NibabelIOWithReorient
 
@@ -45,6 +47,34 @@ CONTENT_TYPE_OCTET_STREAM = "application/octet-stream"
 
 # Reap cached images/jobs untouched for this long (seconds); single-user, generous.
 _DEFAULT_IDLE_TIMEOUT = 3600
+
+# How often (seconds) an idle event stream re-checks its job, so it neither blocks
+# forever on a job whose terminal event was already consumed nor outlives its client.
+_EVENT_POLL_INTERVAL = 1.0
+
+
+def _read_nifti_bytes(raw: bytes):
+    """Read .nii.gz bytes with the training reader (reoriented to RAS)."""
+    # NibabelIOWithReorient reads from a path and infers the format from the suffix.
+    with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        return NibabelIOWithReorient().read_images([tmp_path])
+    finally:
+        os.unlink(tmp_path)
+
+
+def _write_nifti_bytes(labelmap: np.ndarray, props: dict) -> bytes:
+    """Write a labelmap back in the original orientation and return the .nii.gz bytes."""
+    with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
+        out_path = tmp.name
+    try:
+        NibabelIOWithReorient().write_seg(labelmap, out_path, props)
+        with open(out_path, "rb") as handle:
+            return handle.read()
+    finally:
+        os.unlink(out_path)
 
 
 @dataclass
@@ -89,7 +119,7 @@ def make_app(
         if api_key is None:
             return
         expected = f"Bearer {api_key}"
-        if authorization != expected:
+        if not hmac.compare_digest((authorization or "").encode(), expected.encode()):
             raise HTTPException(status_code=401, detail="Invalid or missing API key.")
 
     app = FastAPI(title="VoxTell inference server")
@@ -133,14 +163,9 @@ def make_app(
         """
         raw = await request.body()
         _reap()
-        # NibabelIOWithReorient reads from a path and infers the format from the suffix.
-        with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-        try:
-            data, props = NibabelIOWithReorient().read_images([tmp_path])
-        finally:
-            os.unlink(tmp_path)
+        # Decoding/reorienting (and compressing below) takes seconds for large volumes;
+        # run it off the event loop so progress streams and other requests keep flowing.
+        data, props = await run_in_threadpool(_read_nifti_bytes, raw)
 
         image_id = uuid.uuid4().hex
         spacing = tuple(float(s) for s in props["spacing"])
@@ -156,7 +181,8 @@ def make_app(
         }
         # Body = the reoriented (Z, Y, X) array for display (masks come back in this
         # space), or empty when the GUI already holds the locally-reoriented image.
-        body = pack_array(np.ascontiguousarray(data[0])) if include_image else b""
+        body = (await run_in_threadpool(pack_array, np.ascontiguousarray(data[0]))
+                if include_image else b"")
         return Response(
             content=body,
             media_type=CONTENT_TYPE_OCTET_STREAM,
@@ -167,6 +193,8 @@ def make_app(
     def start_job(payload: dict):
         image_id = payload.get("image_id")
         prompts = payload.get("prompts") or []
+        if isinstance(prompts, str):
+            prompts = [prompts]  # a single prompt, not a sequence of characters
         keep_largest = bool(payload.get("keep_largest", False))
         with lock:
             image = images.get(image_id)
@@ -174,6 +202,11 @@ def make_app(
             raise HTTPException(status_code=404, detail="Unknown image_id (upload it first).")
         if not prompts:
             raise HTTPException(status_code=400, detail="No prompts given.")
+        if not isinstance(prompts, list) or not all(
+            isinstance(p, str) and p.strip() for p in prompts
+        ):
+            raise HTTPException(status_code=400,
+                                detail="prompts must be a list of non-empty strings.")
         _touch(image_id)
 
         job = _Job(image_id=image_id, prompts=list(prompts), keep_largest=keep_largest)
@@ -215,7 +248,16 @@ def make_app(
 
         def generate():
             while True:
-                event = job.events.get()
+                try:
+                    event = job.events.get(timeout=_EVENT_POLL_INTERVAL)
+                except queue.Empty:
+                    if job.status == "running":
+                        continue
+                    # The terminal event was already consumed by an earlier stream
+                    # (e.g. a client reconnect): report the final status instead.
+                    event = {"status": job.status}
+                    if job.error is not None:
+                        event["message"] = job.error
                 yield json.dumps(event) + "\n"
                 if "status" in event:  # terminal event ends the stream
                     break
@@ -251,16 +293,9 @@ def make_app(
             image = images.get(image_id)
         if image is None:
             raise HTTPException(status_code=404, detail="Unknown image_id.")
-        labelmap = unpack_array(await request.body())
+        labelmap = await run_in_threadpool(unpack_array, await request.body())
         _touch(image_id)
-        with tempfile.NamedTemporaryFile(suffix=".nii.gz", delete=False) as tmp:
-            out_path = tmp.name
-        try:
-            NibabelIOWithReorient().write_seg(labelmap, out_path, image.props)
-            with open(out_path, "rb") as handle:
-                content = handle.read()
-        finally:
-            os.unlink(out_path)
+        content = await run_in_threadpool(_write_nifti_bytes, labelmap, image.props)
         return Response(content=content, media_type=CONTENT_TYPE_OCTET_STREAM)
 
     return app

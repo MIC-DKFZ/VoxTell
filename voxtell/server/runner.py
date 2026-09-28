@@ -93,7 +93,7 @@ class RemoteInferenceEngine:
         if not (torch.cuda.is_available() and getattr(device, "type", "") == "cuda"):
             return n_prompts
         try:
-            free, _ = torch.cuda.mem_get_info()
+            free, _ = torch.cuda.mem_get_info(device)
         except Exception:  # noqa: BLE001 - any failure -> just try all prompts at once
             return n_prompts
         voxels = int(np.prod(image_data.shape[-3:]))
