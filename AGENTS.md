@@ -100,8 +100,10 @@ blosc2 only) precisely so the laptop client stays torch-free.
 
 **Server jobs are serialized on purpose.** `RemoteInferenceEngine._lock` guards all GPU work because
 the predictor is shared and mutable (`perform_everything_on_device` is flipped during OOM fallback).
-Don't run jobs concurrently. Likewise, cancellation via `progress_callback` returning `False` must
-keep draining the patch queue — the producer thread deadlocks otherwise (see the comments there).
+Don't run jobs concurrently. Likewise, every exit from the sliding-window consumer loop (done, cancel
+via `progress_callback` returning `False`, or an error such as an OOM in the forward pass) must stop
+and drain the patch producer in the `finally` — otherwise the producer thread blocks forever holding
+GPU tensors and interpreter exit hangs (see the comments there).
 
 **Fine-tuning transfers `encoder.*` only.** `VoxTellTrainer.build_network_architecture` hardcodes the
 6-stage ResEnc-L encoder independently of the dataset's plans so the pretrained weights load with

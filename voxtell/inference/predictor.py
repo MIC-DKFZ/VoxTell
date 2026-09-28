@@ -1,8 +1,8 @@
 import os
 import pydoc
 from pathlib import Path
-from queue import Queue
-from threading import Thread
+from queue import Empty, Queue
+from threading import Event, Thread
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -442,6 +442,8 @@ class VoxTellPredictor:
             RuntimeError: If inf values are encountered in predictions.
         """
         results_device = self.device if do_on_device else torch.device('cpu')
+        # Set by the consumer on any exit path so the producer stops early.
+        stop = Event()
 
         def producer(data_tensor, slicer_list, queue):
             """Producer thread that loads patches into queue.
@@ -452,6 +454,8 @@ class VoxTellPredictor:
             """
             try:
                 for slicer in slicer_list:
+                    if stop.is_set():
+                        return
                     patch = torch.clone(
                         data_tensor[slicer][None],
                         memory_format=torch.contiguous_format
@@ -466,11 +470,9 @@ class VoxTellPredictor:
 
         # move data to device
         data = data.to(results_device)
-        queue = Queue(maxsize=2)
-        t = Thread(target=producer, args=(data, slicers, queue))
-        t.start()
 
-        # preallocate arrays
+        # preallocate arrays (before starting the producer, so an OOM here cannot
+        # strand it)
         predicted_logits = torch.zeros((text_embeddings.shape[1], *data.shape[1:]),
                                         dtype=torch.half,
                                         device=results_device)
@@ -483,41 +485,43 @@ class VoxTellPredictor:
             device=results_device
         )
 
+        queue = Queue(maxsize=2)
+        t = Thread(target=producer, args=(data, slicers, queue), daemon=True)
+        t.start()
+
         total = len(slicers)
         done = 0
-        cancelled = False
-        with tqdm(desc=None, total=total) as pbar:
-            while True:
-                item = queue.get()
-                if item == 'end':
-                    queue.task_done()
-                    break
-                if isinstance(item, _ProducerError):
-                    # Check producer errors first: on error the producer returns
-                    # WITHOUT sending 'end', so we must re-raise even while draining
-                    # after a cancel — otherwise queue.get() would block forever.
-                    queue.task_done()
-                    raise RuntimeError(
-                        "Sliding-window patch producer thread failed"
-                    ) from item.exc
-                if cancelled:
-                    # Keep draining so the producer thread can finish and not block;
-                    # skip the (expensive) network forward.
-                    queue.task_done()
-                    continue
-                patch, tile_slice = item
-                prediction = self.network(patch, text_embeddings)[0].to(results_device)
-                prediction *= gaussian
-                predicted_logits[tile_slice] += prediction
-                n_predictions[tile_slice[1:]] += gaussian
-                queue.task_done()
-                pbar.update()
-                done += 1
-                if progress_callback is not None and progress_callback(done, total) is False:
-                    cancelled = True
-        queue.join()
-        if cancelled:
-            raise InferenceCancelled("Inference cancelled by user.")
+        try:
+            with tqdm(desc=None, total=total) as pbar:
+                while True:
+                    item = queue.get()
+                    if item == 'end':
+                        break
+                    if isinstance(item, _ProducerError):
+                        raise RuntimeError(
+                            "Sliding-window patch producer thread failed"
+                        ) from item.exc
+                    patch, tile_slice = item
+                    prediction = self.network(patch, text_embeddings)[0].to(results_device)
+                    prediction *= gaussian
+                    predicted_logits[tile_slice] += prediction
+                    n_predictions[tile_slice[1:]] += gaussian
+                    pbar.update()
+                    done += 1
+                    if progress_callback is not None and progress_callback(done, total) is False:
+                        raise InferenceCancelled("Inference cancelled by user.")
+        finally:
+            # On any exit (done, cancel, or an error such as a CUDA OOM in the
+            # forward pass) the producer may be blocked on the full queue while
+            # holding references to `data` and queued patches (possibly on the GPU).
+            # Stop it and keep draining until it exits, so it never outlives this
+            # call - otherwise the GPU memory leaks and interpreter exit hangs.
+            stop.set()
+            while t.is_alive():
+                try:
+                    queue.get_nowait()
+                except Empty:
+                    t.join(timeout=0.01)
 
         # Normalize by number of predictions per voxel
         torch.div(predicted_logits, n_predictions, out=predicted_logits)
