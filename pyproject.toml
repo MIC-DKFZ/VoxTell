@@ -1,6 +1,6 @@
 [project]
 name = "voxtell"
-version = "0.1.1"
+version = "0.1.2"
 requires-python = ">=3.10"
 description = "Free-Text Promptable Universal 3D Medical Image Segmentation"
 readme = "readme.md"
@@ -41,8 +41,8 @@ keywords = [
     'volumetric segmentation'
 ]
 dependencies = [
-    "torch>=2.0,<2.9",
-    "nnunetv2>=2.6",
+    "torch>=2.1.2,!=2.9.*",
+    "nnunetv2>=2.7",
     "acvl-utils>=0.2.3,<0.3",
     "dynamic-network-architectures>=0.4.1,<0.5",
     "numpy>=1.24",
@@ -51,7 +51,7 @@ dependencies = [
     "positional-encodings",
     "einops",
     "tqdm",
-    "transformers>=4.54.0,<5",
+    "transformers>=4.56,<6",
     "huggingface_hub",
 ]
 

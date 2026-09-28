@@ -122,10 +122,13 @@ class VoxTellTrainer(nnUNetTrainer):
         return "warmup_all" if self.current_epoch < self.warmup_duration_whole_net else "train"
 
     def on_train_epoch_start(self):
-        if self.current_epoch == 0:
-            self.optimizer, self.lr_scheduler = self.configure_optimizers("warmup_all")
-        elif self.current_epoch == self.warmup_duration_whole_net:
-            self.optimizer, self.lr_scheduler = self.configure_optimizers("train")
+        # Only switch when the stage actually changes. On resume, load_checkpoint has
+        # already set up the right stage around the restored optimizer; rebuilding it
+        # here (e.g. when resuming exactly at the warmup boundary, which coincides with
+        # nnU-Net's save_every=50) would discard its momentum.
+        stage = self.get_stage()
+        if stage != self.training_stage:
+            self.optimizer, self.lr_scheduler = self.configure_optimizers(stage)
         super().on_train_epoch_start()
 
     def load_checkpoint(self, filename_or_checkpoint) -> None:

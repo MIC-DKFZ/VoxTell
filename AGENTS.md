@@ -8,7 +8,7 @@ scales. Inference is nnU-Net-style sliding window. Weights live on HF (`mrokuss/
 ## Commands
 
 ```bash
-# Setup (Python >=3.10; torch is pinned <2.9 — install it first, matched to your CUDA)
+# Setup (Python >=3.10; torch 2.9.x is excluded — install torch first, matched to your CUDA)
 conda create -n voxtell python=3.12 && conda activate voxtell
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip install -e ".[dev,server]"
@@ -65,9 +65,12 @@ match. Route every new prompt path through `embed_text_prompts` rather than embe
 identically in the predictor, `voxtell-predict` and `voxtell-server`. Any new entry point must keep
 that order. Same for the embedding bank: explicit path/dict → published HF bank → backbone.
 
-**Embed once, reuse across images.** `predict_from_jobs` embeds the *union* of all prompts and hands
-per-job slices to `predict_single_image(text_embeddings=...)`. New batch paths must not re-embed per
-image; the 4B backbone dominates runtime for short jobs.
+**Embed once, reuse across images.** `predict_from_jobs` embeds the *union* of all prompts (of the
+jobs not skipped by `overwrite=False`) and hands per-job slices to
+`predict_single_image(text_embeddings=...)`. New batch paths must not re-embed per image; the 4B
+backbone dominates runtime for short jobs. It also prefetches the next image and writes finished masks
+in background threads (at most one read and one write in flight), since gzip I/O of large volumes
+takes seconds per image.
 
 **The text backbone is lazy, bf16 on CUDA, and moved back to CPU after every embed call.** That is
 what keeps VoxTell usable on ~8 GB GPUs. Do not make it resident or float32 on CUDA.
@@ -100,8 +103,10 @@ blosc2 only) precisely so the laptop client stays torch-free.
 
 **Server jobs are serialized on purpose.** `RemoteInferenceEngine._lock` guards all GPU work because
 the predictor is shared and mutable (`perform_everything_on_device` is flipped during OOM fallback).
-Don't run jobs concurrently. Likewise, cancellation via `progress_callback` returning `False` must
-keep draining the patch queue — the producer thread deadlocks otherwise (see the comments there).
+Don't run jobs concurrently. Likewise, every exit from the sliding-window consumer loop (done, cancel
+via `progress_callback` returning `False`, or an error such as an OOM in the forward pass) must stop
+and drain the patch producer in the `finally` — otherwise the producer thread blocks forever holding
+GPU tensors and interpreter exit hangs (see the comments there).
 
 **Fine-tuning transfers `encoder.*` only.** `VoxTellTrainer.build_network_architecture` hardcodes the
 6-stage ResEnc-L encoder independently of the dataset's plans so the pretrained weights load with

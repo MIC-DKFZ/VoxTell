@@ -220,9 +220,10 @@ def _run() -> int:
               file=sys.stderr)
         return 1
 
-    # Model from -m/--model or VOXTELL_MODEL; if neither is set, model stays None
-    # and VoxTellPredictor downloads the default model from Hugging Face (cached).
-    model = args.model or os.environ.get('VOXTELL_MODEL')
+    # Model from -m/--model or VOXTELL_MODEL (empty counts as unset); if neither is
+    # set, model stays None and VoxTellPredictor downloads the default model from
+    # Hugging Face (cached).
+    model = args.model or os.environ.get('VOXTELL_MODEL') or None
 
     if args.jobs and args.input:
         print("Warning: -i/--input is ignored when --jobs is given", file=sys.stderr)
