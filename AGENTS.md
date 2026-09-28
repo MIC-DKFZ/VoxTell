@@ -117,3 +117,17 @@ alongside nnU-Net's — keep that.
 only reference for the flags. Never commit weights, `.npz` banks, or NIfTI data — `.gitignore` blocks
 them and model artifacts belong on Hugging Face. Match the existing docstring style: module
 docstrings say *why*, function docstrings use Google-style `Args:`/`Returns:`/`Raises:`.
+
+**Releases follow nnU-Net (one `vX.Y.Z` tag per PyPI release), and `main` is always the latest
+release.** Code changes reach `main` only as part of a release, so a GitHub install never claims a
+version whose code differs from PyPI. Docs-only changes may land at any time. A release:
+1. Bumps `version` in `pyproject.toml`.
+2. Builds from that exact commit: `rm -rf dist && uv build && uvx twine check dist/*`.
+3. Publishes to PyPI with `uv publish --check-url https://pypi.org/simple/`. If an upload fails
+   midway, rerun it without rebuilding, because PyPI rejects a filename it has seen with different
+   bytes.
+4. Only then pushes `main` and a `vX.Y.Z` tag on the built commit. The readme tells users to
+   `pip install` the new version, so it must not reach GitHub first.
+
+napari-voxtell is versioned independently (like napari-nninteractive and nnInteractive) and pins
+`voxtell>=` the oldest release it needs. When both change, release voxtell first.
