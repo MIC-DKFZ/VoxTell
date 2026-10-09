@@ -9,9 +9,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
-from torch._dynamo import OptimizedModule
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
 
 from acvl_utils.cropping_and_padding.bounding_boxes import insert_crop_into_image
 from acvl_utils.cropping_and_padding.padding import pad_nd_image
@@ -170,11 +168,7 @@ class VoxTellPredictor:
             weights_only=False
         )
 
-        if not isinstance(network, OptimizedModule):
-            network.load_state_dict(checkpoint['network_weights'])
-        else:
-            network._orig_mod.load_state_dict(checkpoint['network_weights'])
-        
+        network.load_state_dict(checkpoint['network_weights'])
         network.eval()
         self.network = network
 
@@ -280,8 +274,14 @@ class VoxTellPredictor:
         on outputs (embedding cosine similarity > 0.9998; segmentation masks
         differ by < 1e-4 % of voxels, below the float16 bank's own noise). On CPU
         it stays float32, where bfloat16 kernels can be slower or less supported.
+
+        transformers is imported here rather than at module level: importing it
+        takes seconds and thousands of modules, which every user of the
+        predictor would otherwise pay even when all prompts are in the bank.
         """
         if self.text_backbone is None:
+            from transformers import AutoModel, AutoTokenizer
+
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self._text_encoding_model, padding_side='left'
             )
